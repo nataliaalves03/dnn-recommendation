@@ -1,0 +1,9 @@
+/archive
+/__pycache__
+/Newdata
+/results
+README_local.md
+requirements.txt
+/Data/*_graph
+/Data/*_neg
+/
