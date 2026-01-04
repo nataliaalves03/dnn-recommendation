@@ -13,7 +13,7 @@ import numpy as np
 from DGSR import DGSR, collate, collate_test
 from dgl import load_graphs
 import pickle
-from utils import myFloder
+from utils import myFloder, get_paths
 import warnings
 import argparse
 import os
@@ -68,32 +68,34 @@ if opt.model_record:
                f'US_{opt.user_short}_IS_{opt.item_short}_La_{args.last_item}_UM_{opt.user_max_length}_IM_{opt.item_max_length}_K_{opt.k_hop}' \
                f'_layer_{opt.layer_num}_l2_{opt.l2}'
 
+
+data_path, train_path, test_path, val_path, graph_path, neg_path = get_paths(opt)
+
 # loading data
-data = pd.read_csv('./Data/' + opt.data + '.csv')
+data = pd.read_csv(data_path)
 user = data['user_id'].unique()
 item = data['item_id'].unique()
 user_num = len(user)
 item_num = len(item)
-train_root = f'Newdata/{opt.data}_{opt.item_max_length}_{opt.user_max_length}_{opt.k_hop}/train/'
-test_root = f'Newdata/{opt.data}_{opt.item_max_length}_{opt.user_max_length}_{opt.k_hop}/test/'
-val_root = f'Newdata/{opt.data}_{opt.item_max_length}_{opt.user_max_length}_{opt.k_hop}/val/'
-train_set = myFloder(train_root, load_graphs)
-test_set = myFloder(test_root, load_graphs)
+
+train_set = myFloder(train_path, load_graphs)
+test_set = myFloder(test_path, load_graphs)
 if opt.val:
-    val_set = myFloder(val_root, load_graphs)
+    val_set = myFloder(val_path, load_graphs)
 
 print('train number:', train_set.size)
 print('test number:', test_set.size)
 print('user number:', user_num)
 print('item number:', item_num)
-f = open('./Data/'+opt.data+'_neg', 'rb')
-data_neg = pickle.load(f) # 用于评估测试集
+
+f = open(neg_path, 'rb')
+data_neg = pickle.load(f) # Used for evaluating the test set
 train_data = DataLoader(dataset=train_set, batch_size=opt.batchSize, collate_fn=collate, shuffle=True, pin_memory=True, num_workers=12)
 test_data = DataLoader(dataset=test_set, batch_size=opt.batchSize, collate_fn=lambda x: collate_test(x, data_neg), pin_memory=True, num_workers=0)
 if opt.val:
     val_data = DataLoader(dataset=val_set, batch_size=opt.batchSize, collate_fn=lambda x: collate_test(x, data_neg), pin_memory=True, num_workers=2)
 
-# 初始化模型
+# Initialize the model
 model = DGSR(user_num=user_num, item_num=item_num, input_dim=opt.hidden_size, item_max_length=opt.item_max_length,
              user_max_length=opt.user_max_length, feat_drop=opt.feat_drop, attn_drop=opt.attn_drop, user_long=opt.user_long, user_short=opt.user_short,
              item_long=opt.item_long, item_short=opt.item_short, user_update=opt.user_update, item_update=opt.item_update, last_item=opt.last_item,

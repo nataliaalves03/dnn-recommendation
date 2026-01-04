@@ -188,3 +188,15 @@ def format_arg_str(args, exclude_lst, max_len=20):
                        + value + ' ' * (value_max_len - len(value)) + linesep
     res_str += '=' * horizon_len
     return res_str
+
+
+def get_paths(opt):
+    data_path = './Data/' + opt.data + '.csv'
+    new_folder = f'Newdata/{opt.data}_{opt.item_max_length}_{opt.user_max_length}_{opt.k_hop}'
+    train_path = f'{new_folder}/train/'
+    test_path = f'{new_folder}/test/'
+    val_path = f'{new_folder}/val/'
+    graph_path = f'{new_folder}/' + opt.data + '_graph'
+    neg_path = f'{new_folder}/' + opt.data + '_neg'
+
+    return data_path, train_path, test_path, val_path, graph_path, neg_path
