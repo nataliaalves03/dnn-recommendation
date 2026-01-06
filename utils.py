@@ -11,6 +11,7 @@ import dgl
 import torch
 import numpy as np
 import pandas as pd
+import datetime
 
 
 
@@ -191,12 +192,22 @@ def format_arg_str(args, exclude_lst, max_len=20):
 
 
 def get_paths(opt):
-    data_path = './Data/' + opt.data + '.csv'
-    new_folder = f'Newdata/{opt.data}_{opt.item_max_length}_{opt.user_max_length}_{opt.k_hop}'
-    train_path = f'{new_folder}/train/'
-    test_path = f'{new_folder}/test/'
-    val_path = f'{new_folder}/val/'
-    graph_path = f'{new_folder}/' + opt.data + '_graph'
-    neg_path = f'{new_folder}/' + opt.data + '_neg'
+    filename = f'{opt.data}_V{opt.version}_{opt.item_max_length}_{opt.user_max_length}'
+    if opt.version == '1':
+        filename = f'{filename}_K_{opt.rw_length}'
+    if opt.version == '2':
+        filename = f'{filename}_RW_{opt.rw_length}_{opt.rw_width}'
+    if opt.version == '3':
+        filename = f'{filename}_N2V_{opt.rw_length}_{opt.rw_width}'
 
-    return data_path, train_path, test_path, val_path, graph_path, neg_path
+    data_path = './Data/' + opt.data + '.csv'
+    train_path = f'Newdata/{filename}/train/'
+    test_path = f'Newdata/{filename}/test/'
+    val_path = f'Newdata/{filename}/val/'
+    graph_path = f'Newdata/{filename}/' + opt.data + '_graph'
+    neg_path = f'Newdata/{filename}/' + opt.data + '_neg'
+
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    timestamp_path = f'{filename}_T{timestamp}'
+
+    return data_path, train_path, test_path, val_path, graph_path, neg_path, timestamp_path

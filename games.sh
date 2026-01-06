@@ -18,6 +18,8 @@ nohup  python -u  new_main.py \
  --user_max_length=50 \
  --attn_drop=0.3 \
  --feat_drop=0.3 \
- --k_hop=3 \
+ --rw_length=3 \
+ --rw_width=20 \
+ --version=1 \
  --record \
  >./results/ga_result&

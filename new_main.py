@@ -24,6 +24,11 @@ import torch.nn as nn
 from DGSR_utils import eval_metric, mkdir_if_not_exist, Logger
 
 
+
+print(torch.cuda.is_available())
+print(torch.cuda.device_count())
+print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU")
+
 warnings.filterwarnings('ignore')
 parser = argparse.ArgumentParser()
 parser.add_argument('--data', default='sample', help='data name: sample')
@@ -43,7 +48,12 @@ parser.add_argument('--attn_drop', type=float, default=0.3, help='drop_out')
 parser.add_argument('--layer_num', type=int, default=3, help='GNN layer')
 parser.add_argument('--item_max_length', type=int, default=50, help='the max length of item sequence')
 parser.add_argument('--user_max_length', type=int, default=50, help='the max length of use sequence')
-parser.add_argument('--k_hop', type=int, default=2, help='sub-graph size')
+
+#not in use, only filename
+parser.add_argument('--rw_length', type=int, default=3, help='Depth of the random walk (formerly k_hop)')
+parser.add_argument('--rw_width', type=int, default=20, help='Branching factor: max neighbors sampled per node (formerly fanout)')
+parser.add_argument('--version', type=str, help='data version')
+
 parser.add_argument('--gpu', default='0')
 parser.add_argument('--last_item', action='store_true', help='aggreate last item')
 parser.add_argument("--record", action='store_true', default=False, help='record experimental results')
@@ -54,22 +64,22 @@ opt = parser.parse_args()
 args, extras = parser.parse_known_args()
 os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu
 device = torch.device('cuda:0')
+
+print('Parameters:')
 print(opt)
 
+data_path, train_path, test_path, val_path, graph_path, neg_path, timestamp_path = get_paths(opt)
+
+print('Train data:', train_path)
+print('Graph data:', graph_path)
+
 if opt.record:
-    log_file = f'results/{opt.data}_ba_{opt.batchSize}_G_{opt.gpu}_dim_{opt.hidden_size}_ulong_{opt.user_long}_ilong_{opt.item_long}_' \
-               f'US_{opt.user_short}_IS_{opt.item_short}_La_{args.last_item}_UM_{opt.user_max_length}_IM_{opt.item_max_length}_K_{opt.k_hop}' \
-               f'_layer_{opt.layer_num}_l2_{opt.l2}'
+    log_file = f'results/{timestamp_path}'
     mkdir_if_not_exist(log_file)
     sys.stdout = Logger(log_file)
     print(f'Logging to {log_file}')
 if opt.model_record:
-    model_file = f'{opt.data}_ba_{opt.batchSize}_G_{opt.gpu}_dim_{opt.hidden_size}_ulong_{opt.user_long}_ilong_{opt.item_long}_' \
-               f'US_{opt.user_short}_IS_{opt.item_short}_La_{args.last_item}_UM_{opt.user_max_length}_IM_{opt.item_max_length}_K_{opt.k_hop}' \
-               f'_layer_{opt.layer_num}_l2_{opt.l2}'
-
-
-data_path, train_path, test_path, val_path, graph_path, neg_path = get_paths(opt)
+    model_file = f'models/{timestamp_path}'
 
 # loading data
 data = pd.read_csv(data_path)
