@@ -18,6 +18,7 @@ from dgl import save_graphs
 from joblib import Parallel, delayed
 import pickle
 from utils import user_neg, get_paths
+import shutil
 
 
 def calculate_edge_weight(data):
@@ -140,18 +141,16 @@ def generate_user_v2_BRW(opt, user, sub_graph):
 
 
 def generate_user_v3_Node2Vec(opt, user, sub_graph):
-    # A. Convert to Homogeneous (Required for Node2Vec)
+    # A. Convert to Homogeneous
     g_homo = dgl.to_homogeneous(sub_graph, edata=['weight'])
 
-    # B. Find the Start Node (Current User) in the Homogeneous Graph
+    # B. Find Start Node
     user_ntype_id = sub_graph.get_ntype_id('user')
-    # Find the node index where Type == User AND Original_ID == Current_User
     start_node_mask = (g_homo.ndata[dgl.NTYPE] == user_ntype_id) & (g_homo.ndata[dgl.NID] == user)
     start_homo_nodes = torch.nonzero(start_node_mask, as_tuple=True)[0]
 
     if len(start_homo_nodes) > 0:
-        # C. Perform Biased Random Walk (Node2Vec)
-        # p=1.0, q=0.5 -> Encourages exploration (DFS-like behavior), moving away from start
+        # C. Perform Random Walk
         traces = dgl.sampling.node2vec_random_walk(
             g_homo, 
             start_homo_nodes, 
@@ -161,9 +160,16 @@ def generate_user_v3_Node2Vec(opt, user, sub_graph):
             prob='weight'
         )
         
-        # D. Extract Unique Nodes Visited
+        # D. Extract Unique Nodes & Remove Padding
         visited_nodes = torch.unique(traces)
-        #visited_nodes = visited_nodes[visited_nodes != -1] # Remove padding (-1)
+        visited_nodes = visited_nodes[visited_nodes != -1]
+
+        # --- SAFETY NET: FIX FOR "MISSING VALIDATION" ---
+        # If the walk failed (only visited the start node), force-add immediate neighbors
+        if len(visited_nodes) <= 1:
+            successors = g_homo.successors(start_homo_nodes)
+            visited_nodes = torch.unique(torch.cat([visited_nodes, successors]))
+        # -----------------------------------------------
 
         # E. Map Back to Heterogeneous Indices
         visited_types = g_homo.ndata[dgl.NTYPE][visited_nodes]
@@ -172,12 +178,10 @@ def generate_user_v3_Node2Vec(opt, user, sub_graph):
         user_mask = (visited_types == sub_graph.get_ntype_id('user'))
         item_mask = (visited_types == sub_graph.get_ntype_id('item'))
 
-        # Get the Original IDs (which are the indices in sub_graph because relabel_nodes=False)
         sel_users = visited_ids[user_mask]
         sel_items = visited_ids[item_mask]
 
         # F. Induce Final Subgraph
-        # node_subgraph automatically includes ALL edges between the selected nodes
         fin_graph = dgl.node_subgraph(sub_graph, {'user': sel_users, 'item': sel_items})
 
         return fin_graph
@@ -200,16 +204,22 @@ def generate_user(user, opt, data, graph, train_path, test_path, val_path=None):
     split_point = len(u_seq) - 1
     train_num = 0
     test_num = 0
-    min_sequence_length = 5 #before: 3
 
     if opt.version not in GENERATORS:
         raise ValueError(f"Unknown version: {opt.version}")
     generate_user_version = GENERATORS[opt.version]
-    #print(f"Running {generate_user_version.__name__}")
     
-
-    if len(u_seq) < min_sequence_length:
+    if len(u_seq) < opt.user_min_length:
         return 0, 0
+    
+    # Noise Filter by edge weight
+    sub_u_eid = (graph.edges['by'].data['weight'] >= opt.noise_threshold)
+    sub_i_eid = (graph.edges['pby'].data['weight'] >= opt.noise_threshold)
+    denoise_graph = dgl.edge_subgraph(graph, edges = {'by':sub_u_eid, 'pby':sub_i_eid}, relabel_nodes=False)
+
+    if denoise_graph.num_edges('by') == 0 or denoise_graph.num_edges('pby') == 0:
+        return 0, 0
+
 
     for j, t  in enumerate(u_time[0:-1]):
         if j == 0:
@@ -219,35 +229,58 @@ def generate_user(user, opt, data, graph, train_path, test_path, val_path=None):
         else:
             start_t = u_time[j - opt.item_max_length]
 
+        # Temporal Slicing
+        sub_u_eid = (denoise_graph.edges['by'].data['time'] < u_time[j+1]) & (denoise_graph.edges['by'].data['time'] >= start_t)
+        sub_i_eid = (denoise_graph.edges['pby'].data['time'] < u_time[j+1]) & (denoise_graph.edges['pby'].data['time'] >= start_t)
+        sub_graph = dgl.edge_subgraph(denoise_graph, edges = {'by':sub_u_eid, 'pby':sub_i_eid}, relabel_nodes=False)
 
-        # Noise Filter & Temporal Slicing
-        sub_u_eid = (graph.edges['by'].data['time'] < u_time[j+1]) & (graph.edges['by'].data['time'] >= start_t) & (graph.edges['by'].data['weight'] >= opt.noise_threshold)
-        sub_i_eid = (graph.edges['pby'].data['time'] < u_time[j+1]) & (graph.edges['pby'].data['time'] >= start_t) & (graph.edges['pby'].data['weight'] >= opt.noise_threshold)
-        sub_graph = dgl.edge_subgraph(graph, edges = {'by':sub_u_eid, 'pby':sub_i_eid}, relabel_nodes=False)
-
-        if sub_graph.num_edges('by') == 0 or sub_graph.num_edges('pby') == 0:
-            continue
+        #if sub_graph.num_edges('by') == 0 or sub_graph.num_edges('pby') == 0:
+        #    continue
     
-        # Final user graph
+        # 1. Try to generate using the selected version
         fin_graph = generate_user_version(opt, user, sub_graph)
 
+        # 2. Check for FAILURE conditions (Empty graph, missing edges, or User/Item lost)
+        # We perform the check immediately to decide if we need the Fallback
+        failed = False
         if fin_graph is None or fin_graph.num_edges('by') == 0 or fin_graph.num_edges('pby') == 0:
-            continue
+            failed = True
+        else:
+            # Also check if the User and Last Item still exist in the graph
+            # (Random walks might sometimes walk away and "forget" the starting node)
+            target = u_seq[j+1]
+            last_item = u_seq[j]
+            u_alis = torch.where(fin_graph.nodes['user'].data['user_id']==user)[0]
+            last_alis = torch.where(fin_graph.nodes['item'].data['item_id']==last_item)[0]
+            if len(u_alis) == 0 or len(last_alis) == 0:
+                failed = True
 
+        # 3. FALLBACK: If V2/V3 failed, use V1 (BFS) to guarantee data consistency
+        if failed:
+            # Force generate using V1 so we don't lose this training/val/test sample
+            fin_graph = generate_user_v1_BFS(opt, user, sub_graph)
+            
+            # Recalculate indices for the fallback graph
+            u_alis = torch.where(fin_graph.nodes['user'].data['user_id']==user)[0]
+            last_alis = torch.where(fin_graph.nodes['item'].data['item_id']==last_item)[0]
+            
+            # If even V1 fails (very rare, means sub_graph was practically empty), then we must skip
+            #if len(u_alis) == 0 or len(last_alis) == 0:
+            #    continue
+
+        # Clean up weights (Model doesn't need them)
         if 'weight' in fin_graph.edges['by'].data:
             del fin_graph.edges['by'].data['weight']
         if 'weight' in fin_graph.edges['pby'].data:
             del fin_graph.edges['pby'].data['weight']
 
+        # Save Logic
+        # Redefine just to be safe, though defined above
         target = u_seq[j+1]
         last_item = u_seq[j]
         u_alis = torch.where(fin_graph.nodes['user'].data['user_id']==user)[0]
         last_alis = torch.where(fin_graph.nodes['item'].data['item_id']==last_item)[0]
 
-        if len(u_alis) == 0 or len(last_alis) == 0:
-            continue
-
-        # 分别计算user和last_item在fin_graph中的索引
         labels = {'user': torch.tensor([user]), 'target': torch.tensor([target]), 'u_alis':u_alis, 'last_alis': last_alis}
 
         if j < split_point-1:
@@ -274,6 +307,7 @@ if __name__ == '__main__':
     parser.add_argument('--graph', action='store_true', help='no_batch')
     parser.add_argument('--item_max_length', type=int, default=50, help='most recent')
     parser.add_argument('--user_max_length', type=int, default=50, help='most recent')
+    parser.add_argument('--user_min_length', type=int, default=5, help='most recent')
     parser.add_argument('--job', type=int, default=10, help='number of parallel jobs')
     parser.add_argument('--rw_length', type=int, default=3, help='Depth of the random walk (formerly k_hop)')
     parser.add_argument('--rw_width', type=int, default=20, help='Branching factor')
@@ -297,6 +331,15 @@ if __name__ == '__main__':
     
     #Debug
     #generate_user(11, opt, data, graph, train_path, test_path, val_path)
+
+
+    #if train_path exists, delete the folder and contents
+    if os.path.exists(train_path):
+        shutil.rmtree(train_path)
+    if os.path.exists(test_path):
+        shutil.rmtree(test_path)
+    if os.path.exists(val_path):
+        shutil.rmtree(val_path)
 
     #"""
     all_num = generate_data(opt, data, graph, train_path, test_path, val_path)
