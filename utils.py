@@ -194,12 +194,10 @@ def format_arg_str(args, exclude_lst, max_len=20):
 def get_paths(opt):
     filename = f'{opt.data}_V{opt.version}_{opt.item_max_length}_{opt.user_max_length}'
     if opt.version == '1':
-        filename = f'{filename}_K_{opt.rw_length}'
-    if opt.version == '2':
-        filename = f'{filename}_RW_{opt.rw_length}_{opt.rw_width}'
-    if opt.version == '3':
-        filename = f'{filename}_N2V_{opt.rw_length}_{opt.rw_width}'
-
+        filename = f'{filename}_K{opt.rw_length}'
+    else:
+        filename = f'{filename}_{opt.rw_length}_{opt.rw_width}'
+    
     data_path = './Data/' + opt.data + '.csv'
     train_path = f'Newdata/{filename}/train/'
     test_path = f'Newdata/{filename}/test/'

@@ -10,7 +10,7 @@ import torch
 from sys import exit
 import pandas as pd
 import numpy as np
-from DGSR import DGSR, collate, collate_test
+from DGSRCA_Gate import DGSRCA, collate, collate_test
 from dgl import load_graphs
 import pickle
 from utils import myFloder, get_paths
@@ -82,11 +82,23 @@ if opt.model_record:
     model_file = f'models/{timestamp_path}'
 
 # loading data
-data = pd.read_csv(data_path)
+data = pd.read_csv(data_path, nrows=opt.max_rows)
 user = data['user_id'].unique()
 item = data['item_id'].unique()
 user_num = len(user)
 item_num = len(item)
+
+# Number of communities to define the Embedding size
+g_list, g_labels = load_graphs(graph_path)
+full_graph = g_list[0]
+community_num = None
+if 'max_community_id' in g_labels:
+    # +1 porque IDs vão de 1 a Max, então precisamos de espaço para o 0 (padding/isolado)
+    community_num = g_labels['max_community_id'].item() + 1
+    print(f"Community info loaded from metadata: {community_num} communities.")
+else:
+    print("Warning: No community info found in graph. Running without community embeddings.")
+
 
 train_set = myFloder(train_path, load_graphs)
 test_set = myFloder(test_path, load_graphs)
@@ -106,10 +118,10 @@ if opt.val:
     val_data = DataLoader(dataset=val_set, batch_size=opt.batchSize, collate_fn=lambda x: collate_test(x, data_neg), pin_memory=True, num_workers=2)
 
 # Initialize the model
-model = DGSR(user_num=user_num, item_num=item_num, input_dim=opt.hidden_size, item_max_length=opt.item_max_length,
+model = DGSRCA(user_num=user_num, item_num=item_num, input_dim=opt.hidden_size, item_max_length=opt.item_max_length,
              user_max_length=opt.user_max_length, feat_drop=opt.feat_drop, attn_drop=opt.attn_drop, user_long=opt.user_long, user_short=opt.user_short,
              item_long=opt.item_long, item_short=opt.item_short, user_update=opt.user_update, item_update=opt.item_update, last_item=opt.last_item,
-             layer_num=opt.layer_num).cuda()
+             layer_num=opt.layer_num, community_num=community_num).cuda()
 optimizer = optim.Adam(model.parameters(), lr=opt.lr, weight_decay=opt.l2)
 loss_func = nn.CrossEntropyLoss()
 best_result = [0, 0, 0, 0, 0, 0]   # hit5,hit10,hit20,mrr5,mrr10,mrr20

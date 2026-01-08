@@ -1,5 +1,5 @@
 #!/user/bin/env/ bash
-nohup  python -u  new_main.py \
+nohup  python -u  new_main_CA.py \
  --data=Games \
  --gpu=0 \
  --epoch=20 \
@@ -18,8 +18,8 @@ nohup  python -u  new_main.py \
  --user_max_length=50 \
  --attn_drop=0.3 \
  --feat_drop=0.3 \
- --rw_length=3 \
- --rw_width=20 \
- --version=1 \
+ --rw_length=5 \
+ --rw_width=10 \
+ --version=2 \
  --record \
  >./results/ga_result&

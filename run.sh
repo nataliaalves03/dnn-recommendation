@@ -10,10 +10,11 @@ ITEM_MAX_LEN=50
 USER_MAX_LEN=50
 USER_MIN_LEN=5
 RW_LENGTH=3
-RW_WIDTH=20
+RW_WIDTH=10
 NOISE_THRESH=0.0
 
-VERSION=3
+VERSION=4
+CA="_CA_Gate"
 
 if [ "$VERSION" -eq 1 ]; then
     RW_LENGTH=3
@@ -22,6 +23,10 @@ elif [ "$VERSION" -eq 2 ]; then
     RW_WIDTH=10
 elif [ "$VERSION" -eq 3 ]; then
     RW_LENGTH=10
+    RW_WIDTH=10
+elif [ "$VERSION" -eq 4 ]; then
+    RW_LENGTH=10
+    RW_WIDTH=10
 fi
 
 JOBS=10
@@ -32,8 +37,8 @@ mkdir -p ./results
 
 # Timestamp for unique logs
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-LOG_GEN="./results/data_${DATASET}_V${VERSION}_${TIMESTAMP}.log"
-LOG_TRAIN="./results/train_${DATASET}_V${VERSION}_${TIMESTAMP}.log"
+LOG_GEN="./results/data_${DATASET}_V${VERSION}${CA}_${TIMESTAMP}.log"
+LOG_TRAIN="./results/train_${DATASET}_V${VERSION}${CA}_${TIMESTAMP}.log"
 
 # ==========================================
 # 1. Run Data Generation (Foreground)
@@ -41,27 +46,31 @@ LOG_TRAIN="./results/train_${DATASET}_V${VERSION}_${TIMESTAMP}.log"
 echo "Starting Data Generation (Version ${VERSION})..."
 echo "Logging to: ${LOG_GEN}"
 
-python -u new_data.py \
- --data=${DATASET} \
- --job=${JOBS} \
- --item_max_length=${ITEM_MAX_LEN} \
- --user_max_length=${USER_MAX_LEN} \
- --user_min_length=${USER_MIN_LEN} \
- --rw_length=${RW_LENGTH} \
- --rw_width=${RW_WIDTH} \
- --noise_threshold=${NOISE_THRESH} \
- --version=${VERSION} \
- --force_graph=True \
- > "${LOG_GEN}" 2>&1
+#if [ "$CA" != "_CA_Emb" && "$CA" != "_CA_Gate" ]; then
 
-# Check if data generation was successful
-if [ $? -ne 0 ]; then
-    echo "❌ Data generation FAILED. Stopping experiment."
-    echo "Check error log: ${LOG_GEN}"
-    exit 1
-fi
+    python -u new_data.py \
+    --data=${DATASET} \
+    --job=${JOBS} \
+    --item_max_length=${ITEM_MAX_LEN} \
+    --user_max_length=${USER_MAX_LEN} \
+    --user_min_length=${USER_MIN_LEN} \
+    --rw_length=${RW_LENGTH} \
+    --rw_width=${RW_WIDTH} \
+    --noise_threshold=${NOISE_THRESH} \
+    --version=${VERSION} \
+    --force_graph=True \
+    > "${LOG_GEN}" 2>&1
 
-echo "✅ Data Generation Complete."
+    # Check if data generation was successful
+    if [ $? -ne 0 ]; then
+        echo "❌ Data generation FAILED. Stopping experiment."
+        echo "Check error log: ${LOG_GEN}"
+        exit 1
+    fi
+
+    echo "✅ Data Generation Complete."
+
+#fi
 
 # ==========================================
 # 2. Run Model Training (Background)
@@ -69,7 +78,7 @@ echo "✅ Data Generation Complete."
 echo "Starting Model Training..."
 echo "Logging to: ${LOG_TRAIN}"
 
-nohup python -u new_main.py \
+nohup python -u new_main${CA}.py \
  --data=${DATASET} \
  --gpu=${GPU_ID} \
  --epoch=20 \
