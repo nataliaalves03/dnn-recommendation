@@ -18,8 +18,8 @@ nohup  python -u  new_main_CA.py \
  --user_max_length=50 \
  --attn_drop=0.3 \
  --feat_drop=0.3 \
- --rw_length=5 \
+ --rw_length=10 \
  --rw_width=10 \
- --version=2 \
+ --version=4 \
  --record \
  >./results/ga_result&

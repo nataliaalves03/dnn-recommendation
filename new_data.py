@@ -134,13 +134,13 @@ def compute_global_communities(graph):
     
     return user_comm, item_comm
 
-
-def compute_community_for_slice(users, items, weights, num_users, num_items):
+def compute_community_for_slice(users, items, weights, num_users, num_items, 
+                                prev_u_comm=None, prev_i_comm=None):
     """
-    Helper function to run Leiden on a specific set of edges (slice).
-    Used by the pre-computation function.
+    Updated to support Warm Start (Dynamic) detection with ID remapping.
+    Fixes the 'Value cannot exceed length of list' error by compacting community IDs.
     """
-    # 1. Identify active nodes to build a compact graph
+    # 1. Identify active nodes
     active_u_unique = np.unique(users)
     active_i_unique = np.unique(items)
     
@@ -154,64 +154,114 @@ def compute_community_for_slice(users, items, weights, num_users, num_items):
     # 3. Build Edges for igraph
     ig_edges = [(u_map[u], i_map[i]) for u, i in zip(users, items)]
     
-    # 4. Construct Graph & Run Leiden
+    # 4. Construct Graph
     g_ig = ig.Graph(n=n_active_u + n_active_i, edges=ig_edges)
     g_ig.to_undirected(combine_edges='first')
     
-    partition = leidenalg.find_partition(
-        g_ig, 
-        leidenalg.ModularityVertexPartition, 
-        weights=weights,
-        n_iterations=-1
-    )
+    # 5. Prepare Initial Membership (Warm Start)
+    initial_membership = None
+    
+    if prev_u_comm is not None and prev_i_comm is not None:
+        # Initialize with -1
+        initial_membership = [-1] * (n_active_u + n_active_i)
+        
+        # Map Users from Global State
+        for uid in active_u_unique:
+            if prev_u_comm[uid] >= 0:
+                initial_membership[u_map[uid]] = int(prev_u_comm[uid])
+                
+        # Map Items from Global State
+        for iid in active_i_unique:
+            if prev_i_comm[iid] >= 0:
+                initial_membership[i_map[iid]] = int(prev_i_comm[iid])
+
+        # --- FIX: Compact IDs to range [0...N-1] ---
+        # Leiden requires community IDs to be < Number of Nodes.
+        # We map the sparse Global IDs to a compact contiguous range for this specific slice.
+        
+        # Get all unique valid community IDs present in this slice
+        unique_ids = sorted(list(set(x for x in initial_membership if x != -1)))
+        
+        # Create a mapping: Old_ID -> New_Compact_ID (0, 1, 2, ...)
+        id_remapping = {old_id: new_id for new_id, old_id in enumerate(unique_ids)}
+        
+        # Assign new IDs
+        # Any node with -1 (new/unassigned) gets a unique ID continuing from where we left off
+        next_id = len(unique_ids)
+        
+        for i in range(len(initial_membership)):
+            val = initial_membership[i]
+            if val != -1:
+                initial_membership[i] = id_remapping[val]
+            else:
+                initial_membership[i] = next_id
+                next_id += 1
+        # -------------------------------------------
+
+    # 6. Run Leiden
+    if initial_membership:
+        partition = leidenalg.find_partition(
+            g_ig, 
+            leidenalg.ModularityVertexPartition, 
+            weights=weights,
+            initial_membership=initial_membership,
+            n_iterations=-1
+        )
+    else:
+        partition = leidenalg.find_partition(
+            g_ig, 
+            leidenalg.ModularityVertexPartition, 
+            weights=weights,
+            n_iterations=-1
+        )
+        
     membership = partition.membership
     
-    # 5. Map back to Global IDs and fill tensors
+    # 7. Map back to Global IDs and update tensors
     u_tensor = torch.zeros(num_users, dtype=torch.long)
     i_tensor = torch.zeros(num_items, dtype=torch.long)
     
     # Map Users
     for virt_id in range(n_active_u):
         orig_uid = active_u_unique[virt_id]
-        u_tensor[orig_uid] = membership[virt_id] + 1
+        u_tensor[orig_uid] = membership[virt_id]
         
     # Map Items
     for virt_id in range(n_active_u, len(membership)):
         orig_iid = active_i_unique[virt_id - n_active_u]
-        i_tensor[orig_iid] = membership[virt_id] + 1
+        i_tensor[orig_iid] = membership[virt_id]
         
     return u_tensor, i_tensor
 
+
 def precompute_rank_communities(data, opt):
     """
-    Pre-computes Leiden communities for each unique time step (Rank).
-    Since 'time' is a per-user rank (0, 1, 2...), we have very few unique states (~50).
-    We calculate the community structure once for each rank level.
+    Modified to implement Iterative/Dynamic detection.
+    We maintain the state of communities and pass it to the next step.
     """
-    print("Pre-computing communities for all time ranks...")
+    print("Pre-computing Dynamic communities (Warm Start)...")
     
-    # Get all unique time steps (ranks) sorted
     unique_times = np.sort(data['time'].unique())
     
-    # Global arrays for fast filtering
     full_u = data['user_id'].values
     full_i = data['item_id'].values
     full_t = data['time'].values
     full_w = data['weight'].values
     
-    # Determine max IDs for tensor sizing
     n_users = data['user_id'].max() + 1
     n_items = data['item_id'].max() + 1
     
     comms_lookup = {}
     global_max = 0
     
+    # Initialize global community state with -1 (meaning unassigned)
+    # Using numpy arrays for faster indexing
+    global_u_comm = np.full(n_users, -1, dtype=int)
+    global_i_comm = np.full(n_items, -1, dtype=int)
+    
     for t in unique_times:
-        # Filter: include edges up to the current rank 't'
-        # Corresponds to sub_graph logic: time < u_time[j+1] where u_time[j+1] ~ t
         mask = (full_t <= t)
         
-        # Apply noise threshold if needed
         if opt.noise_threshold > 0:
             mask = mask & (full_w >= opt.noise_threshold)
             
@@ -229,13 +279,34 @@ def precompute_rank_communities(data, opt):
                                torch.zeros(n_items, dtype=torch.long))
             continue
 
-        # Compute communities for this slice
-        u_comm, i_comm = compute_community_for_slice(s_users, s_items, s_weights, n_users, n_items)
-        comms_lookup[t] = (u_comm, i_comm)
+        # --- DYNAMIC UPDATE ---
+        # We pass the CURRENT global state as the PREVIOUS state for this slice
+        # The function will use this to initialize Leiden
+        u_tensor, i_tensor = compute_community_for_slice(
+            s_users, s_items, s_weights, n_users, n_items,
+            prev_u_comm=global_u_comm,
+            prev_i_comm=global_i_comm
+        )
+        
+        # Save results for graph generation
+        comms_lookup[t] = (u_tensor, i_tensor)
 
-        current_max = max(u_comm.max().item(), i_comm.max().item())
+        # Update global state for the NEXT iteration
+        # Note: We update using numpy(). Since tensor indices match global IDs, this is direct.
+        # Any node not in the current slice retains its old community (or -1) 
+        # But 'u_tensor' has 0s for missing nodes. We need to be careful not to overwrite 
+        # existing communities with 0s if the node is temporarily inactive?
+        # Actually, since mask is cumulative (full_t <= t), nodes never disappear, they only appear.
+        # So we can safely overwrite.
+        global_u_comm = u_tensor.numpy()
+        global_i_comm = i_tensor.numpy()
+
+        current_max = max(u_tensor.max().item(), i_tensor.max().item())
         if current_max > global_max:
             global_max = current_max
+            
+        if t % 50 == 0:
+            print(f"Processed Rank {t}/{unique_times[-1]}")
         
     print(f"Pre-computation finished. {len(comms_lookup)} states cached. Max Community ID: {global_max}")
     return comms_lookup, global_max

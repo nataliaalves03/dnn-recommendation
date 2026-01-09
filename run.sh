@@ -29,7 +29,8 @@ elif [ "$VERSION" -eq 4 ]; then
     RW_WIDTH=10
 fi
 
-JOBS=10
+MAX_ROWS=0
+JOBS=3
 GPU_ID=0
 
 # Create results folder if it doesn't exist
@@ -58,6 +59,7 @@ echo "Logging to: ${LOG_GEN}"
     --rw_width=${RW_WIDTH} \
     --noise_threshold=${NOISE_THRESH} \
     --version=${VERSION} \
+    --max_rows=${MAX_ROWS} \
     --force_graph=True \
     > "${LOG_GEN}" 2>&1
 
@@ -100,6 +102,7 @@ nohup python -u new_main${CA}.py \
  --rw_length=${RW_LENGTH} \
  --rw_width=${RW_WIDTH} \
  --version=${VERSION} \
+ --max_rows=${MAX_ROWS} \
  --record \
  > "${LOG_TRAIN}" 2>&1 &
 

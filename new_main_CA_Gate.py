@@ -59,6 +59,7 @@ parser.add_argument('--last_item', action='store_true', help='aggreate last item
 parser.add_argument("--record", action='store_true', default=False, help='record experimental results')
 parser.add_argument("--val", action='store_true', default=False)
 parser.add_argument("--model_record", action='store_true', default=False, help='record model')
+parser.add_argument('--max_rows',type=int, default=0, help="max dataset rows (0 is disabled)")
 
 opt = parser.parse_args()
 args, extras = parser.parse_known_args()
