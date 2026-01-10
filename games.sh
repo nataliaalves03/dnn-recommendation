@@ -1,5 +1,5 @@
 #!/user/bin/env/ bash
-nohup  python -u  new_main_CA.py \
+nohup  python -u  new_main_CA_Gate.py \
  --data=Games \
  --gpu=0 \
  --epoch=20 \

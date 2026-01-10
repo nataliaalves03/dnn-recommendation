@@ -11,10 +11,10 @@ USER_MAX_LEN=50
 USER_MIN_LEN=5
 RW_LENGTH=3
 RW_WIDTH=10
-NOISE_THRESH=0.0
 
 VERSION=4
 CA="_CA_Gate"
+
 
 if [ "$VERSION" -eq 1 ]; then
     RW_LENGTH=3
@@ -29,7 +29,9 @@ elif [ "$VERSION" -eq 4 ]; then
     RW_WIDTH=10
 fi
 
-MAX_ROWS=0
+
+GENERATE_DATA=0   # 0 ou 1
+MAX_ROWS=10000
 JOBS=3
 GPU_ID=0
 
@@ -47,7 +49,7 @@ LOG_TRAIN="./results/train_${DATASET}_V${VERSION}${CA}_${TIMESTAMP}.log"
 echo "Starting Data Generation (Version ${VERSION})..."
 echo "Logging to: ${LOG_GEN}"
 
-#if [ "$CA" != "_CA_Emb" && "$CA" != "_CA_Gate" ]; then
+if [ "$GENERATE_DATA" = 1 ]; then
 
     python -u new_data.py \
     --data=${DATASET} \
@@ -57,7 +59,6 @@ echo "Logging to: ${LOG_GEN}"
     --user_min_length=${USER_MIN_LEN} \
     --rw_length=${RW_LENGTH} \
     --rw_width=${RW_WIDTH} \
-    --noise_threshold=${NOISE_THRESH} \
     --version=${VERSION} \
     --max_rows=${MAX_ROWS} \
     --force_graph=True \
@@ -72,7 +73,7 @@ echo "Logging to: ${LOG_GEN}"
 
     echo "✅ Data Generation Complete."
 
-#fi
+fi
 
 # ==========================================
 # 2. Run Model Training (Background)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# @Time : 2020/7/1 3:58
-# @Author : ZM7
+# @Time : 2026/01/10 10:00
+# @Author : ZM7, nataliaalves03
 # @File : utils.py
 # @Software: PyCharm
 import os

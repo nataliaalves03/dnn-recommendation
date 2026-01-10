@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# @Time : 2021/11/17 4:32
-# @Author : ZM7
+# @Time : 2026/01/10 10:00
+# @Author : ZM7, nataliaalves03
 # @File : new_main
 # @Software: PyCharm
 
@@ -113,9 +113,12 @@ model = DGSR(user_num=user_num, item_num=item_num, input_dim=opt.hidden_size, it
              layer_num=opt.layer_num).cuda()
 optimizer = optim.Adam(model.parameters(), lr=opt.lr, weight_decay=opt.l2)
 loss_func = nn.CrossEntropyLoss()
-best_result = [0, 0, 0, 0, 0, 0]   # hit5,hit10,hit20,mrr5,mrr10,mrr20
-best_epoch = [0, 0, 0, 0, 0, 0]
+
+# Best result storage: Hit@5, Hit@10, Hit@20, NDCG@5, NDCG@10, NDCG@20, MRR@5, MRR@10, MRR@20
+best_result = [0, 0, 0, 0, 0, 0, 0, 0, 0]
+best_epoch = [0, 0, 0, 0, 0, 0, 0, 0, 0]
 stop_num = 0
+
 for epoch in range(opt.epoch):
     stop = True
     epoch_loss = 0
@@ -146,16 +149,16 @@ for epoch in range(opt.epoch):
                 val_loss = loss_func(score, label.cuda())
                 val_loss_all.append(val_loss.append(val_loss.item()))
                 top_val.append(top.detach().cpu().numpy())
-            recall5, recall10, recall20, ndgg5, ndgg10, ndgg20 = eval_metric(top_val)
-            print('train_loss:%.4f\tval_loss:%.4f\tRecall@5:%.4f\tRecall@10:%.4f\tRecall@20:%.4f\tNDGG@5:%.4f'
-                  '\tNDGG10@10:%.4f\tNDGG@20:%.4f' %
-                  (epoch_loss, np.mean(val_loss_all), recall5, recall10, recall20, ndgg5, ndgg10, ndgg20))
+
+            metrics = eval_metric(top_val)
+            print(f"Validation Loss:{np.mean(val_loss_all):.4f}")
+            print('Validation \tHit@5:%.4f\tHit@10:%.4f\tHit@20:%.4f\tNDCG@5:%.4f\tNDCG@10:%.4f\tNDCG@20:%.4f\tMRR@5:%.4f\tMRR@10:%.4f\tMRR@20:%.4f' %
+              (metrics['Hit@5'], metrics['Hit@10'], metrics['Hit@20'], metrics['NDCG@5'], metrics['NDCG@10'], metrics['NDCG@20'], metrics['MRR@5'], metrics['MRR@10'], metrics['MRR@20']))
 
     # test
     print('start predicting: ', datetime.datetime.now())
-    all_top, all_label, all_length = [], [], []
+    all_top, all_label, all_loss = [], [], []
     iter = 0
-    all_loss = []
     with torch.no_grad():
         for user, batch_graph, label, last_item, neg_tar in test_data:
             iter+=1
@@ -166,40 +169,69 @@ for epoch in range(opt.epoch):
             all_label.append(label.numpy())
             if iter % 200 == 0:
                 print('Iter {}, test_loss {:.4f}'.format(iter, np.mean(all_loss)), datetime.datetime.now())
-        recall5, recall10, recall20, ndgg5, ndgg10, ndgg20 = eval_metric(all_top)
-        if recall5 > best_result[0]:
-            best_result[0] = recall5
+
+        # Calculate metrics
+        metrics = eval_metric(all_top)
+        
+        # Update best results (using Hit/Recall and NDCG for stopping criteria/saving)
+        # Note: Recall is equal to Hit in this context.
+        if metrics['Hit@5'] > best_result[0]:
+            best_result[0] = metrics['Hit@5']
             best_epoch[0] = epoch
             stop = False
-        if recall10 > best_result[1]:
+        if metrics['Hit@10'] > best_result[1]:
             if opt.model_record:
-                torch.save(model.state_dict(), 'save_models/'+ model_file + '.pkl')
-            best_result[1] = recall10
+                torch.save(model.state_dict(), 'save_models/' + model_file + '.pkl')
+            best_result[1] = metrics['Hit@10']
             best_epoch[1] = epoch
             stop = False
-        if recall20 > best_result[2]:
-            best_result[2] = recall20
+        if metrics['Hit@20'] > best_result[2]:
+            best_result[2] = metrics['Hit@20']
             best_epoch[2] = epoch
             stop = False
-            # ------select Mrr------------------
-        if ndgg5 > best_result[3]:
-            best_result[3] = ndgg5
+        
+        # NDCG
+        if metrics['NDCG@5'] > best_result[3]:
+            best_result[3] = metrics['NDCG@5']
             best_epoch[3] = epoch
             stop = False
-        if ndgg10 > best_result[4]:
-            best_result[4] = ndgg10
+        if metrics['NDCG@10'] > best_result[4]:
+            best_result[4] = metrics['NDCG@10']
             best_epoch[4] = epoch
             stop = False
-        if ndgg20 > best_result[5]:
-            best_result[5] = ndgg20
+        if metrics['NDCG@20'] > best_result[5]:
+            best_result[5] = metrics['NDCG@20']
             best_epoch[5] = epoch
             stop = False
+
+        # MRR
+        if metrics['MRR@5'] > best_result[6]:
+            best_result[6] = metrics['MRR@5']
+            best_epoch[6] = epoch
+            stop = False
+        if metrics['MRR@10'] > best_result[7]:
+            best_result[7] = metrics['MRR@10']
+            best_epoch[7] = epoch
+            stop = False
+        if metrics['MRR@20'] > best_result[8]:
+            best_result[8] = metrics['MRR@20']
+            best_epoch[8] = epoch
+            stop = False
+
         if stop:
             stop_num += 1
         else:
             stop_num = 0
-        print('train_loss:%.4f\ttest_loss:%.4f\tRecall@5:%.4f\tRecall@10:%.4f\tRecall@20:%.4f\tNDGG@5:%.4f'
-              '\tNDGG10@10:%.4f\tNDGG@20:%.4f\tEpoch:%d,%d,%d,%d,%d,%d' %
-              (epoch_loss, np.mean(all_loss), best_result[0], best_result[1], best_result[2], best_result[3],
-               best_result[4], best_result[5], best_epoch[0], best_epoch[1],
-               best_epoch[2], best_epoch[3], best_epoch[4], best_epoch[5]))
+        
+        print(f"Test Loss: {np.mean(all_loss):.4f}")
+        
+        metrics = {k: np.round(v, 4) for k, v in metrics.items()}
+        best_result = np.round(best_result, 4).tolist()
+
+        print('Current Epoch \tHit@5:%.4f\tHit@10:%.4f\tHit@20:%.4f\tNDCG@5:%.4f\tNDCG@10:%.4f\tNDCG@20:%.4f\tMRR@5:%.4f\tMRR@10:%.4f\tMRR@20:%.4f' %
+              (metrics['Hit@5'], metrics['Hit@10'], metrics['Hit@20'], metrics['NDCG@5'], metrics['NDCG@10'], metrics['NDCG@20'], metrics['MRR@5'], metrics['MRR@10'], metrics['MRR@20']))
+        
+        print('Best Results \tHit@5:%.4f\tHit@10:%.4f\tHit@20:%.4f\tNDCG@5:%.4f\tNDCG@10:%.4f\tNDCG@20:%.4f\tMRR@5:%.4f\tMRR@10:%.4f\tMRR@20:%.4f' %
+              (best_result[0], best_result[1], best_result[2], best_result[3], best_result[4], best_result[5], best_result[6], best_result[7], best_result[8]))
+        
+        print(f"Best Epochs: {best_epoch}")

@@ -1,46 +1,65 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# @Time : 2021/11/19 10:54
-# @Author : ZM7
+# @Time : 2026/01/10 10:00
+# @Author : ZM7, nataliaalves03
 # @File : DGSR_utils
 # @Software: PyCharm
 
 import numpy as np
 import sys
+import os
 
-def eval_metric(all_top, random_rank=True):
-    recall5, recall10, recall20, ndgg5, ndgg10, ndgg20 = [], [], [], [], [], []
-    data_l = np.zeros((100, 7))
-    for index in range(len(all_top)):
-        prediction = (-all_top[index]).argsort(1).argsort(1)
-        predictions = prediction[:, 0]
-        for i, rank in enumerate(predictions):
-            # data_l[per_length[i], 6] += 1
-            if rank < 20:
-                ndgg20.append(1 / np.log2(rank + 2))
-                recall20.append(1)
-            else:
-                ndgg20.append(0)
-                recall20.append(0)
-            if rank < 10:
-                ndgg10.append(1 / np.log2(rank + 2))
-                recall10.append(1)
-            else:
-                ndgg10.append(0)
-                recall10.append(0)
-            if rank < 5:
-                ndgg5.append(1 / np.log2(rank + 2))
-                recall5.append(1)
-            else:
-                ndgg5.append(0)
-                recall5.append(0)
-    return np.mean(recall5), np.mean(recall10), np.mean(recall20), np.mean(ndgg5), np.mean(ndgg10), np.mean(ndgg20)
+def eval_metric(all_top, k_list=[5, 10, 20]):
+    """
+    Evaluates predictions using Hit, Recall, NDCG, and MRR metrics.
+    Vectorized implementation for speed.
+
+    Args:
+        all_top: List of numpy arrays (batch_size, num_candidates).
+                 It assumes the target item (ground truth) is always at index 0,
+                 and the rest are negative samples.
+        k_list: List of K values for @K metrics.
+
+    Returns:
+        dict: A dictionary containing the mean value for each metric @ K.
+    """
+    # Concatenate all batches into a single matrix
+    predictions = np.concatenate(all_top, axis=0)
+
+    # The target item is always at index 0. We need to find the rank of index 0.
+    # argsort(-preds) sorts indices by score descending.
+    # argsort().argsort() retrieves the rank (0-based index in the sorted list).
+    # We take [:, 0] to get the rank of the target item.
+    ranks = (-predictions).argsort(axis=1).argsort(axis=1)[:, 0]
+
+    results = {}
+
+    for k in k_list:
+        # Hit Rate @ K
+        # 1 if rank < k, else 0
+        hits = (ranks < k).astype(np.float32)
+        results[f'Hit@{k}'] = np.mean(hits)
+
+        # Recall @ K
+        # In single-target next-item recommendation, Recall@K is mathematically identical to Hit@K.
+        results[f'Recall@{k}'] = results[f'Hit@{k}']
+
+        # MRR @ K (Mean Reciprocal Rank)
+        # 1 / (rank + 1) if rank < k, else 0
+        mrr_vals = 1.0 / (ranks + 1)
+        mrr_vals[ranks >= k] = 0.0
+        results[f'MRR@{k}'] = np.mean(mrr_vals)
+
+        # NDCG @ K (Normalized Discounted Cumulative Gain)
+        # 1 / log2(rank + 2) if rank < k, else 0
+        ndcg_vals = 1.0 / np.log2(ranks + 2)
+        ndcg_vals[ranks >= k] = 0.0
+        results[f'NDCG@{k}'] = np.mean(ndcg_vals)
+
+    return results
 
 
 def mkdir_if_not_exist(file_name):
-    import os
-    import shutil
-
     dir_name = os.path.dirname(file_name)
     if not os.path.isdir(dir_name):
         os.makedirs(dir_name)
@@ -48,8 +67,9 @@ def mkdir_if_not_exist(file_name):
 
 class Logger(object):
     """
-    这个类的目的是尽可能不改变原始代码的情况下, 使得程序的输出同时打印在控制台和保存在文件中
-    用法: 只需在程序中加入一行 `sys.stdout = Logger(log_file_path)` 即可
+    This class enables printing output to both the console and a file simultaneously
+    without changing the original print code significantly.
+    Usage: simply add `sys.stdout = Logger(log_file_path)` in the program.
     """
     def __init__(self, file_path):
         self.terminal = sys.stdout
@@ -63,5 +83,4 @@ class Logger(object):
     def flush(self):
         #this flush method is needed for python 3 compatibility.
         #this handles the flush command by doing nothing.
-        #you might want to specify some extra behavior here.
         pass

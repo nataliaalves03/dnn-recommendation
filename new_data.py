@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# @Time : 2021/11/15 7:30
-# @Author : ZM7
+# @Time : 2026/01/10 10:00
+# @Author : ZM7, nataliaalves03
 # @File : new_data
 # @Software: PyCharm
 
@@ -35,6 +35,10 @@ def calculate_edge_weight(data):
     alpha = 3  # Decay rate
     #data['weight'] = (1 - data['event_type_prob']) * np.exp(-alpha * data['recency'])
     data['weight'] = np.exp(-alpha * data['recency'])
+
+    ##### TESTANDO
+    #data['weight'] = data['time']
+
     
     return data
 
@@ -66,73 +70,6 @@ def load_dataset(data, opt):
 
     return data
 
-def compute_global_communities(graph):
-    # 1. Converter para Homogêneo
-    hg = dgl.to_homogeneous(graph, edata=['weight'])
-    
-    # 2. Construir grafo igraph
-    # O igraph precisa de uma lista de tuplas (src, dst) e lista de pesos
-    src, dst = hg.edges()
-    
-    # Convertendo tensores para listas python (necessário pro igraph)
-    # Nota: Usamos cpu().numpy() para garantir que não quebre se estiver em GPU (embora aqui deva ser CPU)
-    edges = list(zip(src.cpu().numpy(), dst.cpu().numpy()))
-    weights = hg.edata['weight'].cpu().numpy()
-    
-    num_nodes = hg.num_nodes()
-    g_ig = ig.Graph(num_nodes, edges)
-    
-    # Importante: Como é um grafo de interação, tratamos como não direcionado para comunidade
-    # (A conexão U->I implica uma relação mútua de comunidade)
-    g_ig.to_undirected(combine_edges='first') 
-    
-    print(f"Running Leiden on graph with {num_nodes} nodes and {len(edges)} edges...")
-    
-    # 3. Rodar Leiden
-    # ModularityVertexPartition é o padrão similar ao Louvain
-    # weights=weights garante que interações recentes (peso maior) definam mais a comunidade
-    partition = leidenalg.find_partition(
-        g_ig, 
-        leidenalg.ModularityVertexPartition, 
-        weights=weights,
-        n_iterations=-1 # Roda até convergir
-    )
-    
-    # partition.membership dá a lista de comunidades na ordem dos nós do grafo homogêneo
-    membership = np.array(partition.membership)
-    num_communities = np.max(membership) + 1
-    print(f"Leiden completed. Found {num_communities} mixed communities.")
-
-    # 4. Mapear de volta para User e Item
-    # dgl.to_homogeneous guarda o tipo original e o ID original
-    # ntype: ID do tipo de nó (0 ou 1, dependendo da ordem interna do DGL)
-    # nid: ID original dentro daquele tipo
-    original_ntypes = hg.ndata[dgl.NTYPE].cpu().numpy()
-    original_nids = hg.ndata[dgl.NID].cpu().numpy()
-    
-    # Precisamos saber qual ID numérico o DGL deu para 'user' e 'item'
-    user_ntype_id = graph.get_ntype_id('user')
-    item_ntype_id = graph.get_ntype_id('item')
-    
-    # Arrays vazios para preencher
-    # Assumimos que os IDs originais são contíguos de 0 a N (o np.unique no generate_graph garante isso)
-    user_comm = np.zeros(graph.num_nodes('user'), dtype=int)
-    item_comm = np.zeros(graph.num_nodes('item'), dtype=int)
-    
-    # Preenchimento vetorizado usando máscaras numpy
-    # Máscara para nós que são users
-    mask_users = (original_ntypes == user_ntype_id)
-    # Pega os IDs originais dos users
-    u_ids = original_nids[mask_users]
-    # Atribui a comunidade correspondente
-    user_comm[u_ids] = membership[mask_users]
-    
-    # Máscara para nós que são items
-    mask_items = (original_ntypes == item_ntype_id)
-    i_ids = original_nids[mask_items]
-    item_comm[i_ids] = membership[mask_items]
-    
-    return user_comm, item_comm
 
 def compute_community_for_slice(users, items, weights, num_users, num_items, 
                                 prev_u_comm=None, prev_i_comm=None):
@@ -175,7 +112,7 @@ def compute_community_for_slice(users, items, weights, num_users, num_items,
             if prev_i_comm[iid] >= 0:
                 initial_membership[i_map[iid]] = int(prev_i_comm[iid])
 
-        # --- FIX: Compact IDs to range [0...N-1] ---
+        # --- Compact IDs to range [0...N-1] ---
         # Leiden requires community IDs to be < Number of Nodes.
         # We map the sparse Global IDs to a compact contiguous range for this specific slice.
         
@@ -261,9 +198,6 @@ def precompute_rank_communities(data, opt):
     
     for t in unique_times:
         mask = (full_t <= t)
-        
-        if opt.noise_threshold > 0:
-            mask = mask & (full_w >= opt.noise_threshold)
             
         if not np.any(mask):
             comms_lookup[t] = (torch.zeros(n_users, dtype=torch.long), 
@@ -369,90 +303,6 @@ def generate_user_v1_BFS(opt, user, sub_graph):
 
     return fin_graph
 
-
-def generate_user_v2_BRW(opt, user, sub_graph):
-    u_temp = torch.tensor([user])
-    his_user = torch.tensor([user])
-    
-    graph_i = sample_neighbors(sub_graph, {'user': u_temp}, fanout=opt.rw_width, edge_dir='in', prob='weight')
-    
-    i_temp = torch.unique(graph_i.edges(etype='by')[0])
-    his_item = torch.unique(graph_i.edges(etype='by')[0])
-    
-    edge_i = [graph_i.edges['by'].data[dgl.NID]]
-    edge_u = []
-
-    for _ in range(opt.rw_length-1):
-        graph_u = sample_neighbors(sub_graph, {'item': i_temp}, fanout=opt.rw_width, edge_dir='in', prob='weight')
-        u_temp = np.setdiff1d(torch.unique(graph_u.edges(etype='pby')[0]), his_user.numpy())[-opt.user_max_length:]
-        
-        graph_i = sample_neighbors(sub_graph, {'user': u_temp}, fanout=opt.rw_width, edge_dir='in', prob='weight')
-        
-        his_user = torch.unique(torch.cat([torch.tensor(u_temp), his_user]))
-        i_temp = np.setdiff1d(torch.unique(graph_i.edges(etype='by')[0]), his_item.numpy())
-        his_item = torch.unique(torch.cat([torch.tensor(i_temp), his_item]))
-        
-        edge_i.append(graph_i.edges['by'].data[dgl.NID])
-        edge_u.append(graph_u.edges['pby'].data[dgl.NID])
-
-    all_edge_u = torch.unique(torch.cat(edge_u)) if edge_u else torch.tensor([], dtype=torch.long)
-    all_edge_i = torch.unique(torch.cat(edge_i)) if edge_i else torch.tensor([], dtype=torch.long)
-
-    fin_graph = dgl.edge_subgraph(sub_graph, edges={'by':all_edge_i,'pby':all_edge_u})
-
-    return fin_graph
-
-
-def generate_user_v3_Node2Vec(opt, user, sub_graph):
-    # A. Convert to Homogeneous
-    g_homo = dgl.to_homogeneous(sub_graph, edata=['weight'])
-
-    # B. Find Start Node
-    user_ntype_id = sub_graph.get_ntype_id('user')
-    start_node_mask = (g_homo.ndata[dgl.NTYPE] == user_ntype_id) & (g_homo.ndata[dgl.NID] == user)
-    start_homo_nodes = torch.nonzero(start_node_mask, as_tuple=True)[0]
-
-    if len(start_homo_nodes) > 0:
-        # Repeat the start node N times to get N walks (rw_width)
-        num_walks = opt.rw_width if opt.rw_width else 10 
-        seeds = start_homo_nodes.repeat(num_walks)
-        
-        # C. Perform Random Walk (Node2Vec)
-        traces = dgl.sampling.node2vec_random_walk(
-            g_homo, 
-            seeds, 
-            p=1.0, 
-            q=0.5, 
-            walk_length=opt.rw_length,
-            prob='weight'
-        )
-        
-        # D. Extract Unique Nodes (Flatten all walks into one set)
-        visited_nodes = torch.unique(traces)
-        visited_nodes = visited_nodes[visited_nodes != -1]
-
-        # Safety Net (Force Neighbors if empty)
-        if len(visited_nodes) <= 1:
-            successors = g_homo.successors(start_homo_nodes)
-            visited_nodes = torch.unique(torch.cat([visited_nodes, successors]))
-
-        # E. Map Back and F. Induce Graph (Same as before)
-        visited_types = g_homo.ndata[dgl.NTYPE][visited_nodes]
-        visited_ids = g_homo.ndata[dgl.NID][visited_nodes]
-        
-        user_mask = (visited_types == sub_graph.get_ntype_id('user'))
-        item_mask = (visited_types == sub_graph.get_ntype_id('item'))
-        
-        sel_users = visited_ids[user_mask]
-        sel_items = visited_ids[item_mask]
-        
-        fin_graph = dgl.node_subgraph(sub_graph, {'user': sel_users, 'item': sel_items})
-
-        return fin_graph
-    else:
-        return None
-    
-
 def generate_user_v4_RW(opt, user, sub_graph):
     # A. Convert to Homogeneous
     g_homo = dgl.to_homogeneous(sub_graph, edata=['weight'])
@@ -497,8 +347,6 @@ def generate_user_v4_RW(opt, user, sub_graph):
 
 GENERATORS = {
     '1': generate_user_v1_BFS,
-    '2': generate_user_v2_BRW,
-    '3': generate_user_v3_Node2Vec,
     '4': generate_user_v4_RW,
 }
 
@@ -518,16 +366,6 @@ def generate_user(user, opt, data, graph, train_path, test_path, val_path=None, 
     if len(u_seq) < 3:
         return 0, 0
     
-    """
-    # Noise Filter by edge weight
-    sub_u_eid = (graph.edges['by'].data['weight'] >= opt.noise_threshold)
-    sub_i_eid = (graph.edges['pby'].data['weight'] >= opt.noise_threshold)
-    denoise_graph = dgl.edge_subgraph(graph, edges = {'by':sub_u_eid, 'pby':sub_i_eid}, relabel_nodes=False)
-
-    if denoise_graph.num_edges('by') == 0 or denoise_graph.num_edges('pby') == 0:
-        return 0, 0
-    """
-
 
     for j, t  in enumerate(u_time[0:-1]):
         if j == 0:
@@ -638,7 +476,6 @@ if __name__ == '__main__':
     parser.add_argument('--job', type=int, default=10, help='number of parallel jobs')
     parser.add_argument('--rw_length', type=int, default=3, help='Depth of the random walk (formerly k_hop)')
     parser.add_argument('--rw_width', type=int, default=20, help='Branching factor')
-    parser.add_argument('--noise_threshold', type=float, default=0.0, help='Minimum edge weight to consider')
     parser.add_argument('--force_graph', type=bool, default=False, help='force graph generation')
     parser.add_argument('--max_rows',type=int, default=0, help="max dataset rows (0 is disabled)")
     parser.add_argument('--version', help='generate user version')
