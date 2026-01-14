@@ -11,11 +11,11 @@ import torch.nn.functional as F
 import numpy as np
 
 
-class DGSRCA(nn.Module):
+class DGSR(nn.Module):
     def __init__(self, user_num, item_num, input_dim, item_max_length, user_max_length, feat_drop=0.2, attn_drop=0.2,
                  user_long='orgat', user_short='att', item_long='ogat', item_short='att', user_update='rnn',
                  item_update='rnn', last_item=True, layer_num=3, time=True, community_num=None):
-        super(DGSRCA, self).__init__()
+        super(DGSR, self).__init__()
         self.user_num = user_num
         self.item_num = item_num
         self.hidden_size = input_dim
@@ -38,8 +38,9 @@ class DGSRCA(nn.Module):
 
 
         # --- Community Gating ---
-        self.community_num = community_num
-        if self.community_num is not None:
+        if community_num is not None:
+            self.community_num = community_num
+
             # Community Embedding
             self.community_embedding = nn.Embedding(self.community_num, self.hidden_size)
             
@@ -58,7 +59,7 @@ class DGSRCA(nn.Module):
             self.unified_map = nn.Linear((self.layer_num + 1) * self.hidden_size, self.hidden_size, bias=False)
         else:
             self.unified_map = nn.Linear(self.layer_num * self.hidden_size, self.hidden_size, bias=False)
-        self.layers = nn.ModuleList([DGSRCALayers(self.hidden_size, self.hidden_size, self.user_max_length, self.item_max_length, feat_drop, attn_drop,
+        self.layers = nn.ModuleList([DGSRLayers(self.hidden_size, self.hidden_size, self.user_max_length, self.item_max_length, feat_drop, attn_drop,
                                                 self.user_long, self.user_short, self.item_long, self.item_short,
                                                 self.user_update, self.item_update) for _ in range(self.layer_num)])
         self.reset_parameters()
@@ -135,10 +136,10 @@ class DGSRCA(nn.Module):
 
 
 
-class DGSRCALayers(nn.Module):
+class DGSRLayers(nn.Module):
     def __init__(self, in_feats, out_feats, user_max_length, item_max_length, feat_drop=0.2, attn_drop=0.2, user_long='orgat', user_short='att',
                  item_long='orgat', item_short='att', user_update='residual', item_update='residual', K=4):
-        super(DGSRCALayers, self).__init__()
+        super(DGSRLayers, self).__init__()
         self.hidden_size = in_feats
         self.user_long = user_long
         self.item_long = item_long

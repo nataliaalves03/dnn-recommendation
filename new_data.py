@@ -11,7 +11,7 @@ import pandas as pd
 import numpy as np
 import datetime
 import argparse
-from dgl.sampling import sample_neighbors, select_topk
+from dgl.sampling import select_topk
 import torch
 import os
 from dgl import save_graphs
@@ -23,34 +23,64 @@ import leidenalg
 import igraph as ig
 
 
-def calculate_edge_weight(data):
+def calculate_edge_weight(data, alpha=3, func='log'):
+    """Assign edge weights using a logarithmic function of recency.
+
+    Recency is normalized to [0,1] (older -> 0, more recent -> 1).
+    Weight = log1p(alpha * recency) / log1p(alpha) so weights are in [0,1]
+    and increase with recency (more recent -> higher weight).
+    """
     data['time'] = data['time'].astype('int64')
+
+    if opt.version == 1:
+        data['weight'] = data['time']
+        return data
 
     min_date = data['time'].min()
     max_date = data['time'].max()
     interval = max_date - min_date
 
-    data['recency'] = data['time'].apply(lambda x: ((x - min_date) ) / (interval))
+    if interval == 0:
+        data['weight'] = data['time']
+    else:
+        #Recency is normalized to [0,1] (older -> 0, more recent -> 1).
+        data['recency'] = (data['time'] - min_date) / interval
 
-    alpha = 3  # Decay rate
-    #data['weight'] = (1 - data['event_type_prob']) * np.exp(-alpha * data['recency'])
-    data['weight'] = np.exp(-alpha * data['recency'])
+        if func == 'log':
+            # Normalized logarithmic scaling: more recent => larger weight in [0,1]
+            data['weight'] = np.log1p(alpha * data['recency']) / np.log1p(alpha)
+        elif func == 'exp':
+            # Exponential decay (older -> smaller weight)
+            data['weight'] = np.exp(-alpha * data['recency'])
 
-    ##### TESTANDO
-    #data['weight'] = data['time']
-
-    
     return data
 
-def load_dataset(data, opt):
-    data = pd.read_csv(data_path) if opt.max_rows <= 0 else pd.read_csv(data_path, nrows=opt.max_rows)
 
-    #Drop users with sequence length < user_min_length (Datasets are already filtered)
-    #user_counts = data['user_id'].value_counts()
-    #valid_users = user_counts[user_counts >= opt.user_min_length].index
-    #data = data[data['user_id'].isin(valid_users)]
+def load_dataset(data, opt):
+    data = pd.read_csv(data_path) # if opt.n_users <= 0 else pd.read_csv(data_path, nrows=opt.n_users)
+
+    #Drop users with less than 5 interactions
+    MIN_INTERACTIONS = 5
+    user_counts = data['user_id'].value_counts()
+    valid_users = user_counts[user_counts >= MIN_INTERACTIONS].index
+    data = data[data['user_id'].isin(valid_users)].reset_index(drop=True)
+
+    # Sample users if n_users is specified
+    if opt.n_users > 0:
+        data = data[data['user_id'] < opt.n_users]
+        print(f"Sampled {opt.n_users} users")
     
-    #Set edge weight (context-aware)
+    #rename item_id to be continuous
+    unique_items = data['item_id'].unique()
+    item_mapping = {old_id: new_id for new_id, old_id in enumerate(unique_items)}
+    data['item_id'] = data['item_id'].map(item_mapping)
+    #rename user_id to be continuous
+    unique_users = data['user_id'].unique()
+    user_mapping = {old_id: new_id for new_id, old_id in enumerate(unique_users)}
+    data['user_id'] = data['user_id'].map(user_mapping)
+
+    
+    #Set edge weight
     data = calculate_edge_weight(data)
 
     #Rank time for each user
@@ -66,8 +96,11 @@ def load_dataset(data, opt):
 
     data = data.reset_index(drop=True)
 
-    print("Max tempo:", data['time'].max())
-
+    print("Max time:", data['time'].max())
+    print("# Users:", data['user_id'].max()+1)
+    print("# Items:", data['item_id'].max()+1)
+    print("# Interactions:", len(data))
+    
     return data
 
 
@@ -173,7 +206,7 @@ def compute_community_for_slice(users, items, weights, num_users, num_items,
 
 def precompute_rank_communities(data, opt):
     """
-    Modified to implement Iterative/Dynamic detection.
+    Implement Iterative/Dynamic community detection.
     We maintain the state of communities and pass it to the next step.
     """
     print("Pre-computing Dynamic communities (Warm Start)...")
@@ -274,7 +307,7 @@ def generate_graph(data):
     return graph
 
 
-def generate_user_v1_BFS(opt, user, sub_graph):
+def generate_user_greedy(opt, user, sub_graph):
     u_temp = torch.tensor([user])
     his_user = torch.tensor([user])
 
@@ -284,7 +317,7 @@ def generate_user_v1_BFS(opt, user, sub_graph):
     edge_i = [graph_i.edges['by'].data[dgl.NID]]
     edge_u = []
 
-    for _ in range(opt.rw_length-1): #k_hop
+    for _ in range(opt.k_hop-1):
         graph_u = select_topk(sub_graph, opt.user_max_length, weight='time', nodes={'item': i_temp})  # item的邻居user
         u_temp = np.setdiff1d(torch.unique(graph_u.edges(etype='pby')[0]), his_user)[-opt.user_max_length:]
         #u_temp = torch.unique(torch.cat((u_temp, graph_u.edges(etype='pby')[0])))
@@ -303,7 +336,7 @@ def generate_user_v1_BFS(opt, user, sub_graph):
 
     return fin_graph
 
-def generate_user_v4_RW(opt, user, sub_graph):
+def generate_user_RW(opt, user, sub_graph):
     # A. Convert to Homogeneous
     g_homo = dgl.to_homogeneous(sub_graph, edata=['weight'])
 
@@ -346,8 +379,8 @@ def generate_user_v4_RW(opt, user, sub_graph):
 
 
 GENERATORS = {
-    '1': generate_user_v1_BFS,
-    '4': generate_user_v4_RW,
+    '1': generate_user_greedy,
+    '2': generate_user_RW,
 }
 
 
@@ -358,6 +391,7 @@ def generate_user(user, opt, data, graph, train_path, test_path, val_path=None, 
     split_point = len(u_seq) - 1
     train_num = 0
     test_num = 0
+    count_fallback = 0
 
     if opt.version not in GENERATORS:
         raise ValueError(f"Unknown version: {opt.version}")
@@ -380,59 +414,25 @@ def generate_user(user, opt, data, graph, train_path, test_path, val_path=None, 
         sub_i_eid = (graph.edges['pby'].data['time'] < u_time[j+1]) & (graph.edges['pby'].data['time'] >= start_t)
         sub_graph = dgl.edge_subgraph(graph, edges = {'by':sub_u_eid, 'pby':sub_i_eid}, relabel_nodes=False)
 
-        # --- OPTIMIZED: LOOKUP COMMUNITIES ---
+        # LOOKUP COMMUNITIES
         # Instead of calculating, we look up the state for the current rank 't'
         # We use 't' (u_time[j]) because that represents the current state before the target
-        # OR we use 'threshold_time - 1' to represent the state at the end of the input sequence.
-        
-        # Using u_time[j] (the time of the last item in input) is safer.
         current_rank = u_time[j]
         
         if current_rank in comms_lookup:
             current_u_comm, current_i_comm = comms_lookup[current_rank]
             sub_graph.nodes['user'].data['community_id'] = current_u_comm
             sub_graph.nodes['item'].data['community_id'] = current_i_comm
-        else:
-            # Fallback (should not happen if pre-computed correctly)
-            sub_graph.nodes['user'].data['community_id'] = torch.zeros(sub_graph.num_nodes('user'), dtype=torch.long)
-            sub_graph.nodes['item'].data['community_id'] = torch.zeros(sub_graph.num_nodes('item'), dtype=torch.long)
-        # -------------------------------------
-        
 
-        #if sub_graph.num_edges('by') == 0 or sub_graph.num_edges('pby') == 0:
-        #    continue
     
         # 1. Try to generate using the selected version
         fin_graph = generate_user_version(opt, user, sub_graph)
 
         # 2. Check for FAILURE conditions (Empty graph, missing edges, or User/Item lost)
-        # We perform the check immediately to decide if we need the Fallback
-        failed = False
         if fin_graph is None or fin_graph.num_edges('by') == 0 or fin_graph.num_edges('pby') == 0:
-            failed = True
-        else:
-            # Also check if the User and Last Item still exist in the graph
-            # (Random walks might sometimes walk away and "forget" the starting node)
-            target = u_seq[j+1]
-            last_item = u_seq[j]
-            u_alis = torch.where(fin_graph.nodes['user'].data['user_id']==user)[0]
-            last_alis = torch.where(fin_graph.nodes['item'].data['item_id']==last_item)[0]
-            if len(u_alis) == 0 or len(last_alis) == 0:
-                failed = True
-
-        # 3. FALLBACK: If V2/V3 failed, use V1 (BFS) to guarantee data consistency
-        if failed:
-            # Force generate using V1 so we don't lose this training/val/test sample
-            fin_graph = generate_user_v1_BFS(opt, user, sub_graph)
-            
-            # Recalculate indices for the fallback graph
-            u_alis = torch.where(fin_graph.nodes['user'].data['user_id']==user)[0]
-            last_alis = torch.where(fin_graph.nodes['item'].data['item_id']==last_item)[0]
-            
-            # If even V1 fails (very rare, means sub_graph was practically empty), then we must skip
-            #if len(u_alis) == 0 or len(last_alis) == 0:
-            #    continue
-
+            fin_graph = generate_user_greedy(opt, user, sub_graph)
+            count_fallback += 1
+ 
         # Clean up weights (Model doesn't need them)
         if 'weight' in fin_graph.edges['by'].data:
             del fin_graph.edges['by'].data['weight']
@@ -440,7 +440,6 @@ def generate_user(user, opt, data, graph, train_path, test_path, val_path=None, 
             del fin_graph.edges['pby'].data['weight']
 
         # Save Logic
-        # Redefine just to be safe, though defined above
         target = u_seq[j+1]
         last_item = u_seq[j]
         u_alis = torch.where(fin_graph.nodes['user'].data['user_id']==user)[0]
@@ -457,6 +456,9 @@ def generate_user(user, opt, data, graph, train_path, test_path, val_path=None, 
             save_graphs(test_path + '/' + str(user) + '/' + str(user) + '_' + str(j) + '.bin', fin_graph,labels)
             test_num += 1
 
+    if count_fallback > 0:
+        print(f"User {user}: Fallbacks used: {count_fallback} out of {len(u_seq)-2} samples.")
+
     return train_num, test_num
 
 
@@ -472,23 +474,29 @@ if __name__ == '__main__':
     parser.add_argument('--graph', action='store_true', help='no_batch')
     parser.add_argument('--item_max_length', type=int, default=50, help='most recent')
     parser.add_argument('--user_max_length', type=int, default=50, help='most recent')
-    parser.add_argument('--user_min_length', type=int, default=5, help='most recent')
     parser.add_argument('--job', type=int, default=10, help='number of parallel jobs')
-    parser.add_argument('--rw_length', type=int, default=3, help='Depth of the random walk (formerly k_hop)')
-    parser.add_argument('--rw_width', type=int, default=20, help='Branching factor')
+    parser.add_argument('--k_hop', type=int, default=3, help='k hop for subgraph extraction')
+    parser.add_argument('--rw_length', type=int, default=10, help='Depth of the random walk')
+    parser.add_argument('--rw_width', type=int, default=10, help='Branching factor')
     parser.add_argument('--force_graph', type=bool, default=False, help='force graph generation')
-    parser.add_argument('--max_rows',type=int, default=0, help="max dataset rows (0 is disabled)")
+    parser.add_argument('--n_users',type=int, default=0, help="max dataset users (0 is disabled)")
     parser.add_argument('--version', help='generate user version')
     opt = parser.parse_args()
 
     data_path, train_path, test_path, val_path, graph_path, neg_path, timestamp_path = get_paths(opt)
+
+    #if train_path exists, delete the folder and contents
+    if os.path.exists(train_path):
+        shutil.rmtree(train_path)
+    if os.path.exists(test_path):
+        shutil.rmtree(test_path)
+    if os.path.exists(val_path):
+        shutil.rmtree(val_path)
     
     data = load_dataset(data_path, opt)
 
     print('start comm:', datetime.datetime.now())
-
     comms_lookup, max_comm_id = precompute_rank_communities(data, opt)
-    
     print('end comm:', datetime.datetime.now())
     
     if opt.force_graph or not os.path.exists(graph_path):
@@ -505,15 +513,6 @@ if __name__ == '__main__':
 
 
     #"""
-
-    #if train_path exists, delete the folder and contents
-    if os.path.exists(train_path):
-        shutil.rmtree(train_path)
-    if os.path.exists(test_path):
-        shutil.rmtree(test_path)
-    if os.path.exists(val_path):
-        shutil.rmtree(val_path)
-
     all_num = generate_data(opt, data, graph, train_path, test_path, val_path, comms_lookup)
     
     train_num = 0

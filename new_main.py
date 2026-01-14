@@ -50,6 +50,7 @@ parser.add_argument('--item_max_length', type=int, default=50, help='the max len
 parser.add_argument('--user_max_length', type=int, default=50, help='the max length of use sequence')
 
 #not in use, only filename
+parser.add_argument('--k_hop', type=int, default=3, help='k hop for subgraph extraction')
 parser.add_argument('--rw_length', type=int, default=3, help='Depth of the random walk (formerly k_hop)')
 parser.add_argument('--rw_width', type=int, default=20, help='Branching factor: max neighbors sampled per node (formerly fanout)')
 parser.add_argument('--version', type=str, help='data version')
@@ -59,7 +60,6 @@ parser.add_argument('--last_item', action='store_true', help='aggreate last item
 parser.add_argument("--record", action='store_true', default=False, help='record experimental results')
 parser.add_argument("--val", action='store_true', default=False)
 parser.add_argument("--model_record", action='store_true', default=False, help='record model')
-parser.add_argument('--max_rows',type=int, default=0, help="max dataset rows (0 is disabled)")
 
 opt = parser.parse_args()
 args, extras = parser.parse_known_args()
@@ -82,12 +82,13 @@ if opt.record:
 if opt.model_record:
     model_file = f'models/{timestamp_path}'
 
-# loading data
-data = pd.read_csv(data_path) if opt.max_rows <= 0 else pd.read_csv(data_path, nrows=opt.max_rows)
-user = data['user_id'].unique()
-item = data['item_id'].unique()
-user_num = len(user)
-item_num = len(item)
+# Load graph and get user/item/community numbers
+g_list, g_labels = load_graphs(graph_path)
+full_graph = g_list[0]
+user_num = full_graph.num_nodes('user')
+item_num = full_graph.num_nodes('item')
+community_num = None
+
 
 train_set = myFloder(train_path, load_graphs)
 test_set = myFloder(test_path, load_graphs)

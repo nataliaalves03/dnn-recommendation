@@ -6,8 +6,8 @@ nohup  python -u  new_data.py \
  --user_max_length=50 \
  --rw_length=10 \
  --rw_width=10 \
- --noise_threshold=0.0 \
- --version=4 \
+ --version=2 \
+ --max_rows=10000 \
  --force_graph=True \
  >./results/ga_data&
 

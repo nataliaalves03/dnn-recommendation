@@ -20,6 +20,6 @@ nohup  python -u  new_main_CA_Gate.py \
  --feat_drop=0.3 \
  --rw_length=10 \
  --rw_width=10 \
- --version=4 \
+ --version=1 \
  --record \
  >./results/ga_result&

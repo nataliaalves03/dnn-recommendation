@@ -10,7 +10,7 @@ import torch
 from sys import exit
 import pandas as pd
 import numpy as np
-from DGSRCA_Gate import DGSRCA, collate, collate_test
+from DGSRCA_Gate import DGSR, collate, collate_test
 from dgl import load_graphs
 import pickle
 from utils import myFloder, get_paths
@@ -50,8 +50,9 @@ parser.add_argument('--item_max_length', type=int, default=50, help='the max len
 parser.add_argument('--user_max_length', type=int, default=50, help='the max length of use sequence')
 
 #not in use, only filename
-parser.add_argument('--rw_length', type=int, default=3, help='Depth of the random walk (formerly k_hop)')
-parser.add_argument('--rw_width', type=int, default=20, help='Branching factor: max neighbors sampled per node (formerly fanout)')
+parser.add_argument('--k_hop', type=int, default=3, help='k hop for subgraph extraction')
+parser.add_argument('--rw_length', type=int, default=10, help='Depth of the random walk (formerly k_hop)')
+parser.add_argument('--rw_width', type=int, default=10, help='Branching factor: max neighbors sampled per node (formerly fanout)')
 parser.add_argument('--version', type=str, help='data version')
 
 parser.add_argument('--gpu', default='0')
@@ -59,7 +60,6 @@ parser.add_argument('--last_item', action='store_true', help='aggreate last item
 parser.add_argument("--record", action='store_true', default=False, help='record experimental results')
 parser.add_argument("--val", action='store_true', default=False)
 parser.add_argument("--model_record", action='store_true', default=False, help='record model')
-parser.add_argument('--max_rows',type=int, default=0, help="max dataset rows (0 is disabled)")
 
 opt = parser.parse_args()
 args, extras = parser.parse_known_args()
@@ -82,16 +82,12 @@ if opt.record:
 if opt.model_record:
     model_file = f'models/{timestamp_path}'
 
-# loading data
-data = pd.read_csv(data_path) if opt.max_rows <= 0 else pd.read_csv(data_path, nrows=opt.max_rows)
-user = data['user_id'].unique()
-item = data['item_id'].unique()
-user_num = len(user)
-item_num = len(item)
 
-# Number of communities to define the Embedding size
+# Load graph and get user/item/community numbers
 g_list, g_labels = load_graphs(graph_path)
 full_graph = g_list[0]
+user_num = full_graph.num_nodes('user')
+item_num = full_graph.num_nodes('item')
 community_num = None
 if 'max_community_id' in g_labels:
     # +1 porque IDs vão de 1 a Max, então precisamos de espaço para o 0 (padding/isolado)
@@ -119,7 +115,7 @@ if opt.val:
     val_data = DataLoader(dataset=val_set, batch_size=opt.batchSize, collate_fn=lambda x: collate_test(x, data_neg), pin_memory=True, num_workers=2)
 
 # Initialize the model
-model = DGSRCA(user_num=user_num, item_num=item_num, input_dim=opt.hidden_size, item_max_length=opt.item_max_length,
+model = DGSR(user_num=user_num, item_num=item_num, input_dim=opt.hidden_size, item_max_length=opt.item_max_length,
              user_max_length=opt.user_max_length, feat_drop=opt.feat_drop, attn_drop=opt.attn_drop, user_long=opt.user_long, user_short=opt.user_short,
              item_long=opt.item_long, item_short=opt.item_short, user_update=opt.user_update, item_update=opt.item_update, last_item=opt.last_item,
              layer_num=opt.layer_num, community_num=community_num).cuda()
