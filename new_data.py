@@ -59,11 +59,21 @@ def calculate_edge_weight(data, alpha=3, func='log'):
 def load_dataset(data, opt):
     data = pd.read_csv(data_path) # if opt.n_users <= 0 else pd.read_csv(data_path, nrows=opt.n_users)
 
-    #Drop users with less than 5 interactions
+    print("Pre-processing stats:")
+    print("# Users:", data['user_id'].max()+1)
+    print("# Items:", data['item_id'].max()+1)
+    print("# Interactions:", len(data))
+    print("Avg length:", data['user_id'].value_counts().mean())
+
+    #Drop users and items with less than 5 interactions
     MIN_INTERACTIONS = 5
     user_counts = data['user_id'].value_counts()
     valid_users = user_counts[user_counts >= MIN_INTERACTIONS].index
     data = data[data['user_id'].isin(valid_users)].reset_index(drop=True)
+
+    item_counts = data['item_id'].value_counts()
+    valid_items = item_counts[item_counts >= MIN_INTERACTIONS].index
+    data = data[data['item_id'].isin(valid_items)].reset_index(drop=True)
 
     # Sample users if n_users is specified
     if opt.n_users > 0:
@@ -81,7 +91,9 @@ def load_dataset(data, opt):
 
     
     #Set edge weight
-    data = calculate_edge_weight(data)
+    #data = calculate_edge_weight(data)
+    data['time'] = data['time'].astype('int64')
+    data['weight'] = data['time']
 
     #Rank time for each user
     data['time'] = data.groupby('user_id')['time'].rank(method='first').astype('int64')
@@ -96,11 +108,13 @@ def load_dataset(data, opt):
 
     data = data.reset_index(drop=True)
 
-    print("Max time:", data['time'].max())
+    print("Post-processing stats:")
     print("# Users:", data['user_id'].max()+1)
     print("# Items:", data['item_id'].max()+1)
     print("# Interactions:", len(data))
-    
+    print("Avg length:", data['user_id'].value_counts().mean())
+    print("Max time:", data['time'].max())
+
     return data
 
 
@@ -126,7 +140,12 @@ def compute_community_for_slice(users, items, weights, num_users, num_items,
     
     # 4. Construct Graph
     g_ig = ig.Graph(n=n_active_u + n_active_i, edges=ig_edges)
-    g_ig.to_undirected(combine_edges='first')
+    
+    # Make sure we truly undirect the graph (returns a new graph in igraph)
+    try:
+        g_ig = g_ig.as_undirected(combine_edges='first')
+    except AttributeError:
+        g_ig = g_ig.to_undirected(combine_edges='first')
     
     # 5. Prepare Initial Membership (Warm Start)
     initial_membership = None
@@ -209,7 +228,7 @@ def precompute_rank_communities(data, opt):
     Implement Iterative/Dynamic community detection.
     We maintain the state of communities and pass it to the next step.
     """
-    print("Pre-computing Dynamic communities (Warm Start)...")
+    print("Pre-computing Dynamic communities...")
     
     unique_times = np.sort(data['time'].unique())
     
@@ -240,6 +259,15 @@ def precompute_rank_communities(data, opt):
         s_users = full_u[mask]
         s_items = full_i[mask]
         s_weights = full_w[mask]
+        s_times = full_t[mask].astype(float)
+
+        # Per-snapshot weights (recency within [1..t] → [0,1])
+        if opt.version == 2:
+            alpha = 3.0
+            denom = max(1.0, float(t))
+            s_rec = s_times / denom
+            s_weights = np.log1p(alpha * s_rec) / np.log1p(alpha)
+
         
         if len(s_users) == 0:
             comms_lookup[t] = (torch.zeros(n_users, dtype=torch.long), 
@@ -336,7 +364,7 @@ def generate_user_greedy(opt, user, sub_graph):
 
     return fin_graph
 
-def generate_user_RW(opt, user, sub_graph):
+def generate_user_RW_homo(opt, user, sub_graph):
     # A. Convert to Homogeneous
     g_homo = dgl.to_homogeneous(sub_graph, edata=['weight'])
 
@@ -345,37 +373,63 @@ def generate_user_RW(opt, user, sub_graph):
     start_node_mask = (g_homo.ndata[dgl.NTYPE] == user_ntype_id) & (g_homo.ndata[dgl.NID] == user)
     start_homo_nodes = torch.nonzero(start_node_mask, as_tuple=True)[0]
 
-    if len(start_homo_nodes) > 0:
-        
-        num_walks = opt.rw_width if opt.rw_width else 10 
-        seeds = start_homo_nodes.repeat(num_walks)
-
-        traces, _ = dgl.sampling.random_walk(g_homo, seeds, length=opt.rw_length, prob='weight')
-
-        # D. Extract Unique Nodes (Flatten all walks into one set)
-        visited_nodes = torch.unique(traces)
-        visited_nodes = visited_nodes[visited_nodes != -1]
-
-        # Safety Net (Force Neighbors if empty)
-        if len(visited_nodes) <= 1:
-            successors = g_homo.successors(start_homo_nodes)
-            visited_nodes = torch.unique(torch.cat([visited_nodes, successors]))
-
-        # E. Map Back and F. Induce Graph (Same as before)
-        visited_types = g_homo.ndata[dgl.NTYPE][visited_nodes]
-        visited_ids = g_homo.ndata[dgl.NID][visited_nodes]
-        
-        user_mask = (visited_types == sub_graph.get_ntype_id('user'))
-        item_mask = (visited_types == sub_graph.get_ntype_id('item'))
-        
-        sel_users = visited_ids[user_mask]
-        sel_items = visited_ids[item_mask]
-        
-        fin_graph = dgl.node_subgraph(sub_graph, {'user': sel_users, 'item': sel_items})
-
-        return fin_graph
-    else:
+    if start_homo_nodes.numel() == 0:
         return None
+
+    num_walks = opt.rw_width if opt.rw_width else 10 
+    seeds = start_homo_nodes.repeat(num_walks)
+
+    traces, _ = dgl.sampling.random_walk(g_homo, seeds, length=opt.rw_length, prob='weight')
+
+    # D. Extract Unique Nodes (Flatten all walks into one set)
+    visited_nodes = torch.unique(traces)
+    visited_nodes = visited_nodes[visited_nodes != -1]
+
+    # Safety Net (Force Neighbors if empty)
+    if len(visited_nodes) <= 1:
+        successors = g_homo.successors(start_homo_nodes)
+        visited_nodes = torch.unique(torch.cat([visited_nodes, successors]))
+
+    # E. Map Back and F. Induce Graph (Same as before)
+    visited_types = g_homo.ndata[dgl.NTYPE][visited_nodes]
+    visited_ids = g_homo.ndata[dgl.NID][visited_nodes]
+    
+    user_mask = (visited_types == sub_graph.get_ntype_id('user'))
+    item_mask = (visited_types == sub_graph.get_ntype_id('item'))
+    
+    sel_users = visited_ids[user_mask]
+    sel_items = visited_ids[item_mask]
+    
+    fin_graph = dgl.node_subgraph(sub_graph, {'user': sel_users, 'item': sel_items})
+
+    return fin_graph
+
+
+def generate_user_RW(opt, user, sub_graph):
+    # Start nodes are user node IDs in this subgraph
+    seeds = torch.tensor([user])
+    
+    # Build metapath of length rw_length: user->item->user...
+    metapath = (['pby','by'] * ((opt.rw_length + 1)//2))[:opt.rw_length]
+    
+    # Repeat seeds for width
+    seeds = seeds.repeat(opt.rw_width)
+    traces, _ = dgl.sampling.random_walk(sub_graph, seeds, metapath=metapath, prob='weight')
+    
+    # Collect visited hetero nodes by type
+    u_nodes = traces[:, 0::2].reshape(-1)  # user positions on U-I-U...
+    i_nodes = traces[:, 1::2].reshape(-1)  # item positions
+    u_nodes = u_nodes[u_nodes != -1]
+    i_nodes = i_nodes[i_nodes != -1]
+    sel_users = torch.unique(u_nodes)
+    sel_items = torch.unique(i_nodes)
+    
+    if sel_users.numel() == 0 or sel_items.numel() == 0:
+        return None
+    
+    fin_graph = dgl.node_subgraph(sub_graph, {'user': sel_users, 'item': sel_items})
+
+    return fin_graph
 
 
 GENERATORS = {
@@ -414,6 +468,19 @@ def generate_user(user, opt, data, graph, train_path, test_path, val_path=None, 
         sub_i_eid = (graph.edges['pby'].data['time'] < u_time[j+1]) & (graph.edges['pby'].data['time'] >= start_t)
         sub_graph = dgl.edge_subgraph(graph, edges = {'by':sub_u_eid, 'pby':sub_i_eid}, relabel_nodes=False)
 
+        # Compute slice-local edge weights (no global normalization)
+        # w = log1p(alpha * recency) / log1p(alpha), where recency in [0,1] within [start_t, next_t)
+        if opt.version == '2':
+            alpha = 3.0
+            win = max(1, int(u_time[j+1] - start_t))
+            for et in ['by', 'pby']:
+                if sub_graph.num_edges(et) == 0:
+                    continue
+                etimes = sub_graph.edges[et].data['time'].float()
+                rec = (etimes - float(start_t)) / float(win)
+                w = torch.log1p(alpha * rec) / np.log1p(alpha)
+                sub_graph.edges[et].data['weight'] = w.clamp(min=1e-8)
+
         # LOOKUP COMMUNITIES
         # Instead of calculating, we look up the state for the current rank 't'
         # We use 't' (u_time[j]) because that represents the current state before the target
@@ -428,7 +495,7 @@ def generate_user(user, opt, data, graph, train_path, test_path, val_path=None, 
         # 1. Try to generate using the selected version
         fin_graph = generate_user_version(opt, user, sub_graph)
 
-        # 2. Check for FAILURE conditions (Empty graph, missing edges, or User/Item lost)
+        # 2. Fallback to Greedy if empty
         if fin_graph is None or fin_graph.num_edges('by') == 0 or fin_graph.num_edges('pby') == 0:
             fin_graph = generate_user_greedy(opt, user, sub_graph)
             count_fallback += 1
@@ -496,7 +563,10 @@ if __name__ == '__main__':
     data = load_dataset(data_path, opt)
 
     print('start comm:', datetime.datetime.now())
-    comms_lookup, max_comm_id = precompute_rank_communities(data, opt)
+    if opt.version == '1':
+        comms_lookup, max_comm_id = {}, 0
+    else:
+        comms_lookup, max_comm_id = precompute_rank_communities(data, opt)
     print('end comm:', datetime.datetime.now())
     
     if opt.force_graph or not os.path.exists(graph_path):

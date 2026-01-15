@@ -91,7 +91,11 @@ item_num = full_graph.num_nodes('item')
 community_num = None
 if 'max_community_id' in g_labels:
     # +1 porque IDs vão de 1 a Max, então precisamos de espaço para o 0 (padding/isolado)
-    community_num = g_labels['max_community_id'].item() + 1
+    community_num = g_labels['max_community_id'].item()
+    if community_num > 0:
+        community_num += 1
+    else:
+        community_num = None
     print(f"Community info loaded from metadata: {community_num} communities.")
 else:
     print("Warning: No community info found in graph. Running without community embeddings.")
