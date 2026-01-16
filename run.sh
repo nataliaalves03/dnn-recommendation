@@ -11,13 +11,13 @@ USER_MAX_LEN=50
 RW_LENGTH=10
 RW_WIDTH=10
 
-VERSION=1
-#CA="_CA_Gate"
-CA=""
+VERSION=2
+CA="_CA_Gate"
+#CA=""
 
 GENERATE_DATA=1   # 0 ou 1
-N_USERS=500       # 0 disabled
-JOBS=10
+N_USERS=0  #5000       # 0 disabled
+JOBS=2
 GPU_ID=0
 RUN_MODEL=1       # 0 ou 1 
 
@@ -89,6 +89,7 @@ if [ "$RUN_MODEL" = 1 ]; then
     --feat_drop=0.3 \
     --rw_length=${RW_LENGTH} \
     --rw_width=${RW_WIDTH} \
+    --n_users=${N_USERS} \
     --version=${VERSION} \
     --record \
     > "${LOG_TRAIN}" 2>&1 &

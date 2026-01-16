@@ -53,6 +53,7 @@ parser.add_argument('--user_max_length', type=int, default=50, help='the max len
 parser.add_argument('--k_hop', type=int, default=3, help='k hop for subgraph extraction')
 parser.add_argument('--rw_length', type=int, default=3, help='Depth of the random walk (formerly k_hop)')
 parser.add_argument('--rw_width', type=int, default=20, help='Branching factor: max neighbors sampled per node (formerly fanout)')
+parser.add_argument('--n_users',type=int, default=0, help="max dataset users (0 is disabled)")
 parser.add_argument('--version', type=str, help='data version')
 
 parser.add_argument('--gpu', default='0')
